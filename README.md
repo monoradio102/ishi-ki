@@ -5,14 +5,14 @@
   <img src="brand/ishiki_logo_ink.svg" width="180" alt="ISHI-KI のロゴ（浮いている石と、コイルの渦巻きのある台座）">
 </picture>
 
-<h1>🚧 開発中 🚧</h1>
+<h1>スマホにかざすと光るNFCタグ</h1>
+
+<h2>🚧 開発中 🚧</h2>
 
 <b>まだ試作の段階です。回路もファームも、これから変わります。</b><br>
 <sub>Work in progress — the circuit and firmware will change.</sub>
 
 <br><br>
-
-<h2>スマホにかざすと光るタグ</h2>
 
 [紹介動画（YouTube）](https://youtu.be/tV1Zj-bIpic)　·　[X](https://x.com/monoradio102/status/2121967545947471978)　·　[ブラウザの画面](https://monoradio102.github.io/ishi-ki/)　·　[回路](hardware/)　·　[ファーム](firmware/)
 
