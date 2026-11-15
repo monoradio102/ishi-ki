@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ISHI-KI</title>
+<link rel="icon" href="brand/favicon.svg" type="image/svg+xml">
 <!--
   ISHI-KI デモの操作画面。Chrome の Web Serial で台（dai_demo）に USB でつなぎ、1 行ずつ命令を送る。
     S0 <pattern> <speed> <r> <g> <b>   石へ（フィギュアの LED、いつもの光り方。台が NFC で書く）。pattern +128 で石の基板の青 LED も光る
@@ -45,7 +46,8 @@
 
   /* ---- 上の帯 ---- */
   header { display: flex; align-items: center; gap: 12px; padding: 26px 0 22px; }
-  .brand { font-size: 19px; font-weight: 600; letter-spacing: .24em; }
+  .brand { display: flex; align-items: center; gap: 12px; white-space: nowrap; font-size: 19px; font-weight: 600; letter-spacing: .24em; }
+  .brand .logo { height: 34px; width: 34px; }
   .spacer { flex: 1; }
   .conn { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--sub); margin-right: 4px; }
   .conn i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
@@ -160,12 +162,20 @@
     .meters { grid-template-columns: 1fr 1fr 1fr; }
     .state { font-size: 24px; text-align: center; }
   }
+  /* スマホの幅：ロゴを足した分、見出しを小さくして右の表示とボタンを折り返さない */
+  .conn, #connect { white-space: nowrap; }
+  @media (max-width: 480px) {
+    header { gap: 8px; }
+    .brand { gap: 8px; font-size: 16px; letter-spacing: .14em; }
+    .brand .logo { height: 28px; width: 28px; }
+    #connect { padding-left: 14px; padding-right: 14px; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
 <header>
-  <div class="brand">ISHI-KI</div>
+  <div class="brand"><img class="logo" src="brand/ishiki_logo_white.svg" alt="">ISHI-KI</div>
   <div class="spacer"></div>
   <div class="conn" id="conn"><i></i><span>未接続</span></div>
   <button class="ghost icon" id="openSettings" title="設定" aria-label="設定">

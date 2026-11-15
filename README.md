@@ -1,5 +1,10 @@
 <div align="center">
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/ishiki_logo_white.svg">
+  <img src="brand/ishiki_logo_ink.svg" width="180" alt="ISHI-KI のロゴ（浮いている石と、コイルの渦巻きのある台座）">
+</picture>
+
 <h1>🚧 開発中 🚧</h1>
 
 <b>まだ試作の段階です。回路もファームも、これから変わります。</b><br>
@@ -13,7 +18,7 @@
 
 <br>
 
-<a href="https://youtu.be/tV1Zj-bIpic"><img src="images/hero.jpg" width="820" alt="スマホの上で目が光るフィギュア（クリックで紹介動画へ）"></a>
+<a href="https://youtu.be/tV1Zj-bIpic"><img src="images/hero.jpg" width="820" alt="スマホで、作品が光る。スマホの上で目が光るフィギュア（クリックで紹介動画へ）"></a>
 
 </div>
 
