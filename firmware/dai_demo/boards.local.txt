@@ -1,0 +1,11 @@
+# STM32duino 3.1.0 には STM32C071KBU6 のボード登録がないので、variants/.../C071K(8-B)(T-U)/boards_entry.txt から足す。
+# ~/.arduino15/packages/STMicroelectronics/hardware/stm32/3.1.0/boards.local.txt に置く（Mac は ~/Library/Arduino15/...）。
+GenC0.menu.pnum.GENERIC_C071KBUX=Generic C071KBUx
+GenC0.menu.pnum.GENERIC_C071KBUX.upload.maximum_size=131072
+GenC0.menu.pnum.GENERIC_C071KBUX.upload.maximum_data_size=24576
+GenC0.menu.pnum.GENERIC_C071KBUX.build.board=GENERIC_C071KBUX
+GenC0.menu.pnum.GENERIC_C071KBUX.build.product_line=STM32C071xx
+GenC0.menu.pnum.GENERIC_C071KBUX.build.variant=STM32C0xx/C071K(8-B)(T-U)
+GenC0.menu.pnum.GENERIC_C071KBUX.debug.svd_file={runtime.tools.STM32_SVD.path}/svd/STM32C0xx/STM32C071.svd
+# この variant には ldscript.ld がない。中身はメモリの大きさを引数で受ける共通のものなので、C071R のものを借りる
+GenC0.menu.pnum.GENERIC_C071KBUX.build.ldscript=../C071R(8-B)T/ldscript.ld

@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ISHI-KI</title>
+<!--
+  ISHI-KI デモの操作画面。Chrome の Web Serial で台（dai_demo）に USB でつなぎ、1 行ずつ命令を送る。
+    S0 <pattern> <speed> <r> <g> <b>   石へ（フィギュアの LED、いつもの光り方。台が NFC で書く）。pattern +128 で石の基板の青 LED も光る
+    S1 <pattern> <speed> <r> <g> <b> <秒×10>  タッチされたときの光り方と続ける時間（台がタッチを読んだら切り替え、時間が過ぎたら戻す）
+    L0 / L1 <pattern> <speed> <r> <g> <b>  台座の LED。L0 は石がないとき、L1 は置かれているとき
+    U <url> / U?                       石の NFC タグとしての URL を書く / 読む
+    ?                                  状態（石の UID を読む）
+    M1 / M0                            石への書き込み：リアルタイム／給電だけ（石は自分のメモリの光り方で光る）
+  台からは返事とは別に、いつでも次の行が来る
+    P <置かれているか> <振幅> <基準> <位相> <基準>  0.2 秒ごと。石のコイルが近いほど、アンテナの振幅と位相がずれる
+    I <UID>                            石が置かれた
+    T <回数> <触れているか>             石がタッチされた
+  光り方の番号と計算は patterns.h と同じ。画面の見本も同じ計算で動かしている。
+  強さ＝振幅のずれ＋位相のずれ（どちらも 0〜255 の目盛り）を、台にぴったり置いたときを 1 として比べたもの。
+  距離は、2 つのコイルの寸法（台：外径 24mm・7 回巻き、石：半径 9.0mm・表裏 5 回ずつ）から相互インダクタンス M を計算し、
+  「ずれ ∝ M^n」として強さから逆算する目安。n は理屈では 2（反射インピーダンス ∝ M²）。「1 cm で合わせる」で実測から決め直せる。
+  開き方: GitHub Pages のページを Chrome / Edge で開く（Web Serial を使う）。手元なら python3 -m http.server で開いて http://localhost:8000/
+-->
+<style>
+  :root {
+    --bg: #0b0c10; --surface: #13151b; --surface-2: #1a1d25; --line: rgba(255,255,255,.07);
+    --text: #eceef3; --sub: #8b91a0; --faint: #5a5f6b;
+    --accent: #8fa8ff; --ok: #6fdc9c; --ng: #ff7a7a; --touch: #ffd45e;
+    --radius: 20px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font-family: "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif; -webkit-font-smoothing: antialiased; min-height: 100vh; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px 48px; }
+  button {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 999px; padding: 9px 18px; cursor: pointer; transition: background .15s, border-color .15s, color .15s;
+  }
+  button:hover { border-color: rgba(255,255,255,.2); }
+  button.primary { background: var(--text); color: #0b0c10; border-color: var(--text); font-weight: 600; }
+  button.ghost { background: transparent; }
+  .icon { width: 40px; height: 40px; padding: 0; display: grid; place-items: center; }
+  .icon svg { width: 18px; height: 18px; }
+
+  /* ---- 上の帯 ---- */
+  header { display: flex; align-items: center; gap: 12px; padding: 26px 0 22px; }
+  .brand { font-size: 19px; font-weight: 600; letter-spacing: .24em; }
+  .spacer { flex: 1; }
+  .conn { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--sub); margin-right: 4px; }
+  .conn i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+  .conn.on { color: var(--text); } .conn.on i { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; }
+  h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: .05em; }
+
+  /* ---- 台の上 ---- */
+  .stage { display: grid; grid-template-columns: 280px 1fr; gap: 44px; align-items: center; padding: 28px 40px; }
+  .scene { width: 280px; height: 280px; display: grid; place-items: center; }
+  .dai { position: relative; width: 230px; height: 230px; border-radius: 22px; background: #101114;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.06), 0 20px 40px rgba(0,0,0,.4); }
+  .slit { position: absolute; border-radius: 3px; background: #23262e; }
+  .slit.t { left: 113px; top: 16px; width: 4px; height: 38px; }
+  .slit.b { left: 113px; bottom: 16px; width: 4px; height: 38px; }
+  .slit.l { top: 113px; left: 16px; width: 38px; height: 4px; }
+  .slit.r { top: 113px; right: 16px; width: 38px; height: 4px; }
+  .stone {
+    position: absolute; left: 50%; top: 50%; width: 118px; height: 118px; margin: -59px 0 0 -59px; border-radius: 50%;
+    background: radial-gradient(circle at 38% 30%, #5a6274, #2a2f3b 72%); border: 1px solid rgba(255,255,255,.2);
+    box-shadow: 0 18px 30px rgba(0,0,0,.55); transition: opacity .35s, transform .35s cubic-bezier(.2,.8,.2,1);
+    opacity: 0; transform: translateY(-40px) scale(1.1);
+  }
+  .stone.near { opacity: .3; }
+  .stone.on { opacity: 1; transform: none; box-shadow: 0 6px 14px rgba(0,0,0,.5); }
+  .stone .led { position: absolute; left: 50%; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%; }
+  .ripple { position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--touch); opacity: 0; pointer-events: none; }
+  .ripple.go { animation: ripple .9s ease-out; }
+  @keyframes ripple { from { opacity: .9; transform: scale(1); } to { opacity: 0; transform: scale(1.55); } }
+  .readout { display: grid; gap: 26px; }
+  .state { font-size: 30px; font-weight: 600; letter-spacing: .04em; line-height: 1.25; }
+  .state small { display: block; font-size: 13px; color: var(--sub); font-weight: 400; letter-spacing: .02em; margin-top: 8px; }
+  .meters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .meter { background: var(--surface-2); border-radius: 14px; padding: 14px 16px; transition: background .3s; }
+  .meter .k { font-size: 12px; color: var(--sub); }
+  .meter .v { font-size: 28px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .meter .v small { font-size: 13px; color: var(--sub); font-weight: 400; margin-left: 3px; }
+  .bar { height: 4px; border-radius: 2px; background: rgba(255,255,255,.07); margin-top: 10px; overflow: hidden; }
+  .bar b { display: block; height: 100%; width: 0; border-radius: 2px; background: linear-gradient(90deg, #6f8cff, #b7f0ff); transition: width .2s; }
+  .meter.touch.hit { background: rgba(255,212,94,.16); transition: none; }
+  .meter.touch.hit .v { color: var(--touch); }
+
+  /* ---- 操作 ---- */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
+  .ctl { display: grid; gap: 20px; align-content: start; }
+  .top { display: flex; align-items: center; gap: 14px; }
+  .top h2 { flex: 1; }
+  .top .note { font-size: 12px; color: var(--sub); font-weight: 400; margin-left: 8px; letter-spacing: 0; }
+  .orb { width: 44px; height: 44px; border-radius: 50%; background: #07080b; display: grid; place-items: center; border: 1px solid var(--line); flex: none; }
+  .orb i { width: 18px; height: 18px; border-radius: 50%; }
+  .seg { display: flex; background: var(--surface-2); border-radius: 999px; padding: 3px; gap: 2px; }
+  .seg button { flex: 1; border: none; background: transparent; padding: 8px 12px; font-size: 13px; color: var(--sub); }
+  .seg button.sel { background: var(--text); color: #0b0c10; font-weight: 600; }
+  .label { font-size: 12px; color: var(--sub); margin-bottom: 10px; display: flex; justify-content: space-between; }
+  .label b { color: var(--text); font-weight: 500; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { padding: 6px 13px; font-size: 13px; background: transparent; }
+  .chips button.sel { background: var(--text); color: #0b0c10; border-color: var(--text); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; margin: 0; display: block; }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,.12); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--text); margin-top: -7px; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  .swatches { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
+  .sw { width: 24px; height: 24px; border-radius: 50%; cursor: pointer; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); transition: transform .12s; }
+  .sw:hover { transform: scale(1.12); }
+  .sw.sel { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text); }
+  input.hue { margin-top: 14px; }
+  input.hue::-webkit-slider-runnable-track { height: 10px; border-radius: 5px;
+    background: linear-gradient(90deg, #f00, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00); }
+  input.hue::-webkit-slider-thumb { margin-top: -4px; }
+  .switch { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; color: var(--sub); cursor: pointer; user-select: none; }
+  .switch input { display: none; }
+  .switch span { width: 38px; height: 22px; border-radius: 11px; background: rgba(255,255,255,.14); position: relative; transition: background .2s; flex: none; }
+  .switch span::after { content: ""; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--text); transition: transform .2s; }
+  .switch input:checked + span { background: #6f8cff; }
+  .switch input:checked + span::after { transform: translateX(16px); }
+  .switch.on { color: var(--text); }
+  #figure.power .body { opacity: .3; pointer-events: none; }
+  .powernote { display: none; font-size: 12.5px; color: var(--sub); background: var(--surface-2); border-radius: 12px; padding: 10px 14px; margin: -6px 0 0; }
+  #figure.power .powernote { display: block; }
+  .body { display: grid; gap: 20px; }
+  .msg { font-size: 12px; color: var(--ng); font-family: ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: none; }
+  .msg.ng { display: block; }
+
+  /* ---- 設定（右から出る） ---- */
+  .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 10; }
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100vw); background: var(--surface); border-left: 1px solid var(--line);
+    transform: translateX(100%); transition: transform .25s cubic-bezier(.2,.8,.2,1); z-index: 11; overflow-y: auto; padding: 22px 24px 40px; }
+  body.settings .backdrop { opacity: 1; pointer-events: auto; }
+  body.settings .drawer { transform: none; }
+  .drawer .top { margin-bottom: 8px; }
+  .drawer section { border-top: 1px solid var(--line); padding: 20px 0; display: grid; gap: 16px; }
+  .drawer h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  .drawer .hint { font-size: 12px; color: var(--sub); line-height: 1.6; margin: -8px 0 0; }
+  .field { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--sub); }
+  .field input[type=number] { width: 70px; font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+  .btns button { font-size: 13px; padding: 7px 14px; }
+  .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--faint); }
+  .urlrow { display: flex; gap: 8px; }
+  .urlrow input { flex: 1; min-width: 0; font: inherit; font-size: 14px; color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; }
+  .urlrow input:focus { outline: none; border-color: rgba(255,255,255,.25); }
+  .urlmsg { font-size: 12px; font-family: ui-monospace, Menlo, monospace; color: var(--sub); min-height: 1.3em; }
+  .urlmsg.ng { color: var(--ng); }
+
+  @media (max-width: 860px) {
+    .wrap { padding: 0 16px 32px; }
+    .stage { grid-template-columns: 1fr; justify-items: center; padding: 24px 18px; gap: 20px; }
+    .grid { grid-template-columns: 1fr; }
+    .meters { grid-template-columns: 1fr 1fr 1fr; }
+    .state { font-size: 24px; text-align: center; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand">ISHI-KI</div>
+  <div class="spacer"></div>
+  <div class="conn" id="conn"><i></i><span>未接続</span></div>
+  <button class="ghost icon" id="openSettings" title="設定" aria-label="設定">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+  </button>
+  <button id="connect" class="primary">台につなぐ</button>
+</header>
+
+<section class="card stage">
+  <div class="scene">
+    <div class="dai" id="dai">
+      <div class="slit t"></div><div class="slit b"></div><div class="slit l"></div><div class="slit r"></div>
+      <div class="stone" id="stone"><div class="led" id="stoneLed"></div><div class="ripple" id="ripple"></div></div>
+    </div>
+  </div>
+  <div class="readout">
+    <div class="state" id="state">台につないでください<small id="uid">&nbsp;</small></div>
+    <div class="meters">
+      <div class="meter"><div class="k">強さ</div><div class="v" id="strength">—</div><div class="bar"><b id="strengthBar"></b></div></div>
+      <div class="meter"><div class="k">距離（目安）</div><div class="v" id="dist">—</div><div class="bar"><b id="distBar"></b></div></div>
+      <div class="meter touch" id="touchBox"><div class="k">タッチ</div><div class="v" id="touch">0<small>回</small></div></div>
+    </div>
+  </div>
+</section>
+
+<div class="grid">
+  <section class="card ctl" id="figure">
+    <div class="top">
+      <h2>フィギュア</h2>
+      <label class="switch" id="liveLabel"><input type="checkbox" id="liveWrite"><span></span>石に書く</label>
+      <div class="orb"><i></i></div>
+    </div>
+    <p class="powernote">給電だけ：石には書かず、石が覚えている光り方で光ります（スマホに置いたときと同じ）</p>
+    <div class="body">
+      <div class="seg" id="figSeg"><button data-s="0" class="sel">いつも</button><button data-s="1">タッチしたとき</button></div>
+      <div id="figColorRow"><div class="label">色</div><div class="swatches"></div></div>
+      <div><div class="label">光り方</div><div class="chips" id="figPats"></div></div>
+      <div class="row2">
+        <div><div class="label">明るさ</div><input type="range" class="level" min="0" max="255" value="255"></div>
+        <div><div class="label">速さ</div><input type="range" class="speed" min="0" max="255" value="120"></div>
+      </div>
+      <div id="holdRow"><div class="label">続ける時間<b id="holdText"></b></div><input type="range" class="hold" min="5" max="100" value="20"></div>
+      <div class="msg"></div>
+    </div>
+  </section>
+
+  <section class="card ctl" id="base">
+    <div class="top">
+      <h2>台座</h2>
+      <div class="orb"><i></i></div>
+    </div>
+    <div class="body">
+      <div class="seg" id="slotSeg"><button data-s="0" class="sel">石がないとき</button><button data-s="1">石を置いたとき</button></div>
+      <div><div class="label">色</div><div class="swatches"></div></div>
+      <div><div class="label">光り方</div><div class="chips"></div></div>
+      <div class="row2">
+        <div><div class="label">明るさ</div><input type="range" class="level" min="0" max="255"></div>
+        <div><div class="label">速さ</div><input type="range" class="speed" min="0" max="255"></div>
+      </div>
+      <div class="msg"></div>
+    </div>
+  </section>
+</div>
+</div>
+
+<!-- 設定：ふだんは触らないもの -->
+<div class="backdrop" id="backdrop"></div>
+<aside class="drawer" id="drawer" aria-label="設定">
+  <div class="top"><h2>設定</h2><button class="ghost icon" id="closeSettings" aria-label="閉じる">✕</button></div>
+
+  <section>
+    <h3>石の LED</h3>
+    <div><div class="label">つないだ LED</div><div class="seg" id="ledKind"><button data-k="mono">単色（1 個）</button><button data-k="rgb">RGB（3528）</button></div></div>
+    <div id="figOrderRow"><div class="label">色の並び（CH1・CH2・CH3）</div><div class="chips" id="ledOrder"></div></div>
+    <p class="hint" id="orderHint">赤を選んで別の色が光るときに合わせる。K はカソード（いつも Low）</p>
+    <label class="switch"><input type="checkbox" id="boardLed"><span></span>石の基板の確認用 LED も光らせる</label>
+  </section>
+
+  <section>
+    <h3>NFC タグ</h3>
+    <p class="hint">スマホをかざしたときに開く URL を、台から石に書き込みます</p>
+    <div class="urlrow"><input type="url" id="urlInput" placeholder="https://..." spellcheck="false"><button id="urlWrite" class="primary">書く</button></div>
+    <div class="btns"><button id="urlRead">今の URL を読む</button></div>
+    <div class="urlmsg" id="urlMsg"></div>
+  </section>
+
+  <section>
+    <h3>距離の目安</h3>
+    <p class="hint">2 つのコイルの寸法から計算した目安。ケースなどで浮いている分を入れておく</p>
+    <label class="field">置いたときの距離 <input id="d0" type="number" min="0" max="40" step="0.5"> mm</label>
+    <div class="btns"><button id="rezero">今の位置を「置いた」にする</button><button id="cal1cm">置いた位置から 1 cm 上げて押す</button></div>
+    <div class="mono" id="raw">ずれ —</div>
+  </section>
+
+  <section>
+    <h3>つなぎ方</h3>
+    <p class="hint" style="margin:0">Chrome で開き、「台につなぐ」で ISHI-KI の台（STMicroelectronics の USB シリアル）を選びます。台のファームを書き換えるときは、先にこのページを再読み込みして接続を外します。</p>
+  </section>
+</aside>
+
+<script>
+// ---- 光り方（patterns.h と同じ計算） ----
+const PATTERNS = ["消灯", "点灯", "呼吸", "点滅", "鼓動", "ろうそく", "虹", "きらめき"];
+const periodMs = s => 4000 - Math.floor(s * 3600 / 255);
+const tri8 = (t, p) => { const x = Math.floor((t % p) * 510 / p); return x < 256 ? x : 510 - x; };
+const gamma8 = x => Math.floor(x * x / 255);
+function hueToRgb(h) {
+  const region = Math.floor(h / 43), rem = (h - region * 43) * 6, q = 255 - rem, t = rem;
+  return [[255, t, 0], [q, 255, 0], [0, 255, t], [0, q, 255], [t, 0, 255], [255, 0, q]][Math.min(region, 5)];
+}
+function makePattern() {
+  let flick = 255, next = 0;
+  return (t, pat, spd, r, g, b) => {
+    const p = periodMs(spd);
+    let k = 255;
+    switch (pat) {
+      case 0: k = 0; break;
+      case 2: k = gamma8(tri8(t, p)); break;
+      case 3: k = (t % p) < p / 2 ? 255 : 0; break;
+      case 4: { const x = t % p, beat = Math.floor(p / 8);
+        k = x < beat ? gamma8(255 - Math.floor(x * 255 / beat))
+          : (x >= beat * 2 && x < beat * 3) ? gamma8(255 - Math.floor((x - beat * 2) * 255 / beat)) : 0; break; }
+      case 5: if (t >= next) { flick = 120 + Math.floor(Math.random() * 136); next = t + 30 + Math.random() * (p / 10); } k = flick; break;
+      case 6: { const lvl = Math.max(r, g, b), c = hueToRgb(Math.floor((t % p) * 255 / p));
+        return c.map(v => Math.floor(v * lvl / 255)); }
+      case 7: if (t >= next) { flick = Math.random() < 1 / 6 ? 255 : 40; next = t + 40 + Math.random() * (p / 4); } k = flick; break;
+    }
+    return [r, g, b].map(v => Math.floor(v * k / 255));
+  };
+}
+const hexToRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+// 画面の色（sRGB）を LED の PWM（光の量に比例）に直す。画面の 70/255 は光の量では約 6% なのに、そのまま
+// PWM に入れると 27% 光って、色が白っぽくなる（2026-11-15）。level は明るさ（0〜255、光の量に比例）
+const srgbToLinear = v => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+const ledRgb = (hex, level) => hexToRgb(hex).map(v => Math.round(srgbToLinear(v) * level));
+const glow = ([r, g, b], size = 1) => {
+  const m = Math.max(r, g, b);
+  return `0 0 ${(10 + m / 6) * size}px ${(m / 14) * size}px rgb(${r},${g},${b})`;
+};
+
+// ---- 距離の目安：2 つのコイルの相互インダクタンス ----
+// 同じ軸の 2 本の円形の線（半径 a, b、間隔 z）の相互インダクタンス（Maxwell の式。μ0 は比をとるので省く）
+function ellipticKE(m) {
+  let a = 1, b = Math.sqrt(1 - m), sum = m / 2, p = 1;
+  for (let i = 0; i < 30; i++) {
+    const c = (a - b) / 2;
+    if (c < 1e-12) break;
+    const an = (a + b) / 2; b = Math.sqrt(a * b); a = an;
+    sum += p * c * c; p *= 2;
+  }
+  const K = Math.PI / (2 * a);
+  return [K, K * (1 - sum)];
+}
+function loopM(a, b, z) {
+  const m = 4 * a * b / ((a + b) ** 2 + z * z), k = Math.sqrt(m), [K, E] = ellipticKE(m);
+  return Math.sqrt(a * b) * ((2 / k - k) * K - (2 / k) * E);
+}
+// 台：外径 24mm、線幅 0.4・間隔 0.3mm で 7 回（線の中心の半径）。石：外側の半径 9.0mm、0.3mm おきに 5 回、表と裏（1.6mm）
+const DAI_R = [...Array(7)].map((_, i) => 11.8 - 0.7 * i);
+const ISHI_R = [...Array(5)].map((_, j) => 9.0 - 0.3 * j);
+const ISHI_Z = [0, 1.6];
+// 同じ半径の線が 0mm で重なると細い線の式は無限大になるので、線の太さの分だけ離す
+// （断面 0.4×0.035mm の幾何平均距離 ≒ 0.2235×(幅＋厚さ)）
+const WIRE_GAP = 0.2235 * (0.4 + 0.035);
+const coilM = d => DAI_R.reduce((s, a) => s + ISHI_R.reduce((s2, b) => s2 + ISHI_Z.reduce((s3, z) => s3 + loopM(a, b, d + z + WIRE_GAP), 0), 0), 0);
+// ずれ ∝ M^n として、置いたときの距離 d0 を 1 とした比を 0.1mm おきに表にしておく。
+// d0 はケースや板で台から浮いている分（台のコイルから石のコイルまで）。距離は台のコイルからの値で出す
+const MTAB = [...Array(801)].map((_, i) => coilM(i / 10));
+let expo = +(localStorage.getItem("ishiki.n") || 2);
+let d0 = +(localStorage.getItem("ishiki.d0") ?? 7);  // 最初は今のケース（約 6mm）＋PLA 1mm
+let RATIO;
+function rebuild() {
+  const i0 = Math.round(d0 * 10);
+  RATIO = MTAB.map((m, i) => i < i0 ? 1 : (m / MTAB[i0]) ** expo);
+}
+function setExpo(n) { expo = n; localStorage.setItem("ishiki.n", n.toFixed(3)); rebuild(); }
+function setD0(v) { d0 = Math.max(0, Math.min(40, v)); localStorage.setItem("ishiki.d0", d0); rebuild(); }
+rebuild();
+function distanceFromRatio(r) {
+  const i0 = Math.round(d0 * 10);
+  if (r >= 1) return d0;
+  for (let i = i0 + 1; i < RATIO.length; i++)
+    if (RATIO[i] <= r) { const t = (RATIO[i - 1] - r) / (RATIO[i - 1] - RATIO[i]); return (i - 1 + t) / 10; }
+  return 80;
+}
+
+// ---- 台との通信：1 行送って 1 行の返事を待つ。同じ相手の古い命令は新しいもので置き換える ----
+let port, writer, lineBuf = "", waiting = null;
+const pending = new Map();
+const el = id => document.getElementById(id);
+const conn = el("conn");
+const setConn = (text, on) => { conn.querySelector("span").textContent = text; conn.classList.toggle("on", on); };
+
+el("connect").onclick = async () => {
+  try {
+    port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x0483 }] });
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    setConn("接続中", true);
+    el("connect").style.display = "none";
+    readLoop();
+    send("M", "M" + figure.mode()); send("S1", figure.command(1)); send("S0", figure.command(0)); send("L0", base.command(0)); send("L1", base.command(1)); send("?", "?");
+    render();
+  } catch (e) { setConn("つなげません: " + e.message, false); }
+};
+
+async function readLoop() {
+  const reader = port.readable.getReader(), dec = new TextDecoder();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      lineBuf += dec.decode(value);
+      let i;
+      while ((i = lineBuf.indexOf("\n")) >= 0) {
+        const line = lineBuf.slice(0, i).trim(); lineBuf = lineBuf.slice(i + 1);
+        const f = line.split(" ");
+        if (f[0] === "P" && f.length === 6) { onPresence(f[1] === "1", +f[2], +f[3], +f[4], +f[5]); continue; }
+        if (f[0] === "T" && f.length === 3) { onTouch(+f[1], f[2] === "1"); continue; }
+        if (f[0] === "I" && f.length === 2) { setUid(f[1]); continue; }
+        if (line && waiting) { const w = waiting; waiting = null; w(line); }
+      }
+    }
+  } catch (e) { /* 下で切断を表示する */ }
+  writer = null;
+  setConn("切れました（再読み込みしてつなぎ直す）", false);
+  render();
+}
+
+let busy = false;
+async function pump() {
+  if (busy || !writer) return;
+  busy = true;
+  while (pending.size && writer) {
+    const [key, line] = pending.entries().next().value;
+    pending.delete(key);
+    const reply = await new Promise(res => {
+      waiting = res;
+      writer.write(new TextEncoder().encode(line + "\n"));
+      setTimeout(() => { if (waiting === res) { waiting = null; res("NG timeout"); } }, key === "U" ? 6000 : 1500);
+    });
+    onReply(key, line, reply);
+  }
+  busy = false;
+}
+function send(key, line) { pending.set(key, line); pump(); }
+
+// 返事：うまくいったら何も出さず、NG のときだけカードの下に出す
+function showMsg(box, line, reply) {
+  const ok = reply.startsWith("OK") || reply.startsWith("URL");
+  box.className = "msg" + (ok ? "" : " ng");
+  box.textContent = ok ? "" : `${reply}　(${line})`;
+}
+function onReply(key, line, reply) {
+  if (key === "S0" || key === "S1" || key === "M") showMsg(figure.msg, line, reply);
+  else if (key === "L0" || key === "L1") showMsg(base.msg, line, reply);
+  else if (key === "U") {
+    if (reply.startsWith("URL ") && reply !== "URL (none)") urlInput.value = reply.slice(4);
+    const ok = reply.startsWith("OK") || reply.startsWith("URL");
+    urlMsg.className = "urlmsg" + (ok ? "" : " ng");
+    urlMsg.textContent = reply.startsWith("OK") ? "書きました" : reply;
+  } else if (key === "?") {
+    const m = reply.match(/stone UID ([0-9A-F]{16})/);
+    if (m) setUid(m[1]);
+  }
+}
+
+// ---- 石が置かれているか・強さ・距離 ----
+const stoneEl = el("stone"), stateEl = el("state"), uidEl = el("uid");
+let present = false, near = false, uid = "", deltaS = null, lastSeen = 0;
+// ぴったり置いたとき（0mm）の振幅の下がり方。石が置かれているあいだの最大値を覚えておく（ブラウザに保存）
+let dRef = +(localStorage.getItem("ishiki.dRef2") || 0);
+// 石がないときの揺れ。これより小さい下がり方は「なし」とみなす（石がないあいだの値から出す）
+const idle = [];
+function noiseThr() {
+  if (idle.length < 10) return 3;
+  const mean = idle.reduce((a, b) => a + b, 0) / idle.length;
+  const sd = Math.sqrt(idle.reduce((a, b) => a + (b - mean) ** 2, 0) / idle.length);
+  return Math.max(1.5, mean + 3 * sd);
+}
+
+function setUid(u) { uid = u; render(); }
+function onPresence(p, amp, baseAmp, ph, basePh) {
+  lastSeen = performance.now();
+  const d = Math.max(0, baseAmp - amp) + Math.abs(ph - basePh);
+  deltaS = deltaS === null ? d : deltaS * 0.6 + d * 0.4;
+  if (!p) { idle.push(d); if (idle.length > 40) idle.shift(); }
+  if (p && deltaS > dRef) { dRef = deltaS; localStorage.setItem("ishiki.dRef2", dRef.toFixed(2)); }
+  if (p !== present) { present = p; if (!p) uid = ""; }
+  near = !p && deltaS > noiseThr();
+  el("raw").textContent = `ずれ ${deltaS.toFixed(1)}（振幅 ${amp}/${baseAmp}・位相 ${ph}/${basePh}）`;
+  render();
+}
+// 置いた位置から 1cm 持ち上げて押すと、そのときの強さから n を決め直す（ずれ ∝ M^n の n）
+el("cal1cm").onclick = () => {
+  const r = deltaS / dRef, i0 = Math.round(d0 * 10);
+  if (!(r > 0 && r < 1)) return;
+  setExpo(Math.log(r) / Math.log(MTAB[i0 + 100] / MTAB[i0]));
+  render();
+};
+el("d0").value = d0;
+el("d0").oninput = () => { setD0(+el("d0").value || 0); render(); };
+el("rezero").onclick = () => { if (deltaS > 0) { dRef = deltaS; localStorage.setItem("ishiki.dRef2", dRef.toFixed(2)); render(); } };
+
+function render() {
+  const thr = noiseThr(), active = present || near, known = dRef > thr;
+  stoneEl.className = "stone" + (present ? " on" : near ? " near" : "");
+  stateEl.firstChild.textContent = !writer ? "台につないでください" : present ? "石が置かれています" : near ? "石が近くにあります" : "石を置いてください";
+  uidEl.textContent = present && uid ? "ID …" + uid.slice(-6)
+    : writer && !known ? "一度ぴったり置くと、強さと距離が出ます" : " ";
+  let pct = 0, dist = null, farther = false;
+  if (active && deltaS !== null && known) {
+    const r = Math.min(1, deltaS / dRef);
+    pct = Math.round(r * 100);
+    // 揺れより小さいずれは測れないので、「揺れの大きさに当たる距離より遠い」とだけ出す
+    if (deltaS < thr) { dist = distanceFromRatio(thr / dRef); farther = true; }
+    else dist = distanceFromRatio(r);
+  }
+  el("strength").innerHTML = active && known ? `${pct}<small>%</small>` : "—";
+  el("strengthBar").style.width = pct + "%";
+  el("dist").innerHTML = dist === null ? "—" : `${farther ? "&gt;" : ""}${dist < 10 ? dist.toFixed(1) : Math.round(dist)}<small>mm</small>`;
+  el("distBar").style.width = dist === null ? "0%" : Math.max(0, 100 - (dist - d0) * 5) + "%";
+}
+
+// 石がタッチされた
+let touchTimer;
+let touchUntil = 0, touching = false;
+function onTouch(count, now) {
+  touching = now;
+  touchUntil = performance.now() + figure.holdMs();
+  el("touch").innerHTML = `${count}<small>回</small>`;
+  el("touchBox").classList.add("hit");
+  const rp = el("ripple"); rp.classList.remove("go"); void rp.offsetWidth; rp.classList.add("go");
+  clearTimeout(touchTimer);
+  touchTimer = setTimeout(() => el("touchBox").classList.remove("hit"), now ? 1500 : 700);
+}
+
+// ---- 設定（右から出る） ----
+const openSettings = on => document.body.classList.toggle("settings", on);
+el("openSettings").onclick = () => openSettings(true);
+el("closeSettings").onclick = el("backdrop").onclick = () => openSettings(false);
+addEventListener("keydown", e => { if (e.key === "Escape") openSettings(false); });
+
+// ---- URL ----
+const urlInput = el("urlInput"), urlMsg = el("urlMsg");
+el("urlWrite").onclick = () => { const u = urlInput.value.trim(); if (u) send("U", "U " + u); };
+el("urlRead").onclick = () => send("U", "U?");
+
+// ---- 操作カード ----
+function buildChips(box, skip, onPick) {
+  PATTERNS.forEach((name, i) => {
+    if (skip.includes(i)) return;
+    const b = document.createElement("button");
+    b.textContent = name; b.dataset.i = i;
+    b.onclick = () => onPick(i);
+    box.appendChild(b);
+  });
+  return i => box.querySelectorAll("button").forEach(b => b.classList.toggle("sel", +b.dataset.i === i));
+}
+const SWATCHES = ["#ffffff", "#ff4646", "#ff9a2e", "#ffe14d", "#3dff8a", "#2ee6ff", "#3b6bff", "#8a5cff", "#ff5cc8"];
+// 色相（0〜360）と、鮮やかな色（彩度・明度いっぱい）の行き来
+function hueToHex(h) {
+  const f = n => { const k = (n + h / 60) % 6; return Math.round(255 * (1 - Math.max(0, Math.min(k, 4 - k, 1)))); };
+  return "#" + [f(5), f(3), f(1)].map(v => v.toString(16).padStart(2, "0")).join("");
+}
+function hexToHue(hex) {
+  const [r, g, b] = hexToRgb(hex).map(v => v / 255), mx = Math.max(r, g, b), d = mx - Math.min(r, g, b);
+  if (!d) return null;  // 白・灰色は色相なし
+  const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return Math.round((h * 60 + 360) % 360);
+}
+// 色の丸と色相のスライダーを作る。get() で今の色、set(c) で選んだ色を受け取る。戻り値は表示の更新
+function buildSwatches(box, get, set) {
+  for (const c of SWATCHES) {
+    const sw = document.createElement("div");
+    sw.className = "sw"; sw.style.background = c; sw.dataset.c = c;
+    sw.onclick = () => set(c);
+    box.appendChild(sw);
+  }
+  // 色相のスライダー：動かしている間、そのまま送る（送る命令は台の返事を待って最新の 1 つにまとめる）
+  const hue = document.createElement("input");
+  hue.type = "range"; hue.min = 0; hue.max = 359; hue.className = "hue";
+  hue.oninput = () => set(hueToHex(+hue.value));
+  box.after(hue);
+  return () => {
+    const c = get(), h = hexToHue(c);
+    if (h !== null) hue.value = h;
+    box.querySelectorAll(".sw").forEach(sw => sw.classList.toggle("sel", sw.dataset.c === c));
+  };
+}
+
+// フィギュア：石の LED。単色（外付けの LED 1 個）なら色は選ばず明るさだけ（r=g=b で送るので、どの端子につないでも光る）。
+// RGB（裏の LED4 に 3528）なら色も選ぶ。いつも（0）とタッチされたとき（1）の 2 つ。画面ではどちらかを選んで変える
+const figure = (() => {
+  const root = el("figure"), level = root.querySelector(".level"), speed = root.querySelector(".speed");
+  const hold = root.querySelector(".hold");
+  // 石の基板の確認用 LED も光らせるか（設定。いつも・タッチの両方に効く）
+  const boardLed = el("boardLed");
+  boardLed.checked = localStorage.getItem("ishiki.boardLed") === "1";
+  const looks = [
+    { pat: 2, spd: 120, level: 255, color: "#3b6bff" },  // いつも：呼吸
+    { pat: 1, spd: 128, level: 255, color: "#ffffff" },  // タッチ：点灯
+  ];
+  let slot = 0;
+  let kind = localStorage.getItem("ishiki.ledKind") || "mono";
+  // 石への書き込み：1 リアルタイム、0 給電だけ（画面の設定は覚えておき、リアルタイムに戻したときに書く）
+  let mode = localStorage.getItem("ishiki.writeMode") || "1";
+  const RAINBOW = 6;
+  const mark = buildChips(el("figPats"), [], i => { looks[slot].pat = i; update(); });
+  const markColor = buildSwatches(root.querySelector("#figColorRow .swatches"), () => looks[slot].color, c => { looks[slot].color = c; update(); });
+  // 色の並び：CH1・CH2・CH3 につながっている素子の色（0 赤、1 緑、2 青、3 カソード＝いつも 0 を出す）。
+  // 品物によってピン順が違うので画面で合わせる。Rev.1 の石の LED4 は、XL-A3528RGBC-BM とパッドの番号の並びが合わず、
+  // カソードが CH3（欠けを右下）か CH1（欠けを左上）に来る。そのときはカソードの CH を Low にして 2 色で使う（2026-11-15）
+  const ORDERS = [[0, 1, 2], [1, 2, 0], [2, 0, 1], [0, 2, 1], [1, 0, 2], [2, 1, 0], [1, 2, 3], [3, 0, 1]];
+  const NAMES = ["赤", "緑", "青", "K"];
+  let order = JSON.parse(localStorage.getItem("ishiki.ledOrder") || "[0,1,2]");
+  const orderBox = el("ledOrder");
+  ORDERS.forEach(o => {
+    const b = document.createElement("button");
+    b.textContent = o.map(i => NAMES[i]).join("・") + (o.join() === "0,1,2" ? "（標準）" : "");
+    b.dataset.o = o.join();
+    b.onclick = () => {
+      order = o;
+      localStorage.setItem("ishiki.ledOrder", JSON.stringify(o));
+      show();
+      send("S1", card.command(1)); send("S0", card.command(0));
+    };
+    orderBox.appendChild(b);
+  });
+  const colorOf = L => hexToRgb(L.color).map(v => Math.round(v * L.level / 255));
+  const rgbOf = L => kind === "rgb" ? colorOf(L) : [L.level, L.level, L.level];
+  // 石へ送る値：CH1〜3 に、そこにつながっている色の値を入れる
+  const chOf = L => {
+    if (kind !== "rgb") return [L.level, L.level, L.level];
+    const c = [...ledRgb(L.color, L.level), 0];
+    return order.map(i => c[i]);
+  };
+  const card = {
+    msg: root.querySelector(".msg"),
+    look: s => ({ pat: looks[s].pat, spd: looks[s].spd, rgb: rgbOf(looks[s]) }),
+    holdMs: () => +hold.value * 100,
+    isMono: () => kind === "mono",
+    // pattern の最上位ビットで「石の基板の青 LED も光らせる」を伝える
+    command: s => {
+      const L = looks[s];
+      return `S${s} ${L.pat | (boardLed.checked ? 128 : 0)} ${L.spd} ${chOf(L).join(" ")}` + (s ? ` ${hold.value}` : "");
+    },
+    slot: () => slot,
+    mode: () => mode,
+  };
+  function show() {
+    const L = looks[slot];
+    root.classList.toggle("power", mode === "0");
+    el("liveWrite").checked = mode === "1";
+    el("liveLabel").classList.toggle("on", mode === "1");
+    mark(L.pat); level.value = L.level; speed.value = L.spd;
+    markColor();
+    el("figColorRow").style.display = el("figOrderRow").style.display = el("orderHint").style.display = kind === "rgb" ? "" : "none";
+    orderBox.querySelectorAll("button").forEach(b => b.classList.toggle("sel", b.dataset.o === order.join()));
+    // 単色の LED では虹は意味がないので出さない
+    root.querySelector(`#figPats button[data-i="${RAINBOW}"]`).style.display = kind === "rgb" ? "" : "none";
+    document.querySelectorAll("#ledKind button").forEach(b => b.classList.toggle("sel", b.dataset.k === kind));
+    el("holdRow").style.display = slot ? "" : "none";
+    el("holdText").textContent = (hold.value / 10).toFixed(1) + " 秒（触れている間は延びる）";
+    root.querySelectorAll("#figSeg button").forEach(b => b.classList.toggle("sel", +b.dataset.s === slot));
+  }
+  function update() { show(); if (mode === "1") send("S" + slot, card.command(slot)); }
+  level.oninput = () => { looks[slot].level = +level.value; update(); };
+  speed.oninput = () => { looks[slot].spd = +speed.value; update(); };
+  boardLed.onchange = () => {
+    localStorage.setItem("ishiki.boardLed", boardLed.checked ? "1" : "0");
+    if (mode === "1") { send("S1", card.command(1)); send("S0", card.command(0)); }
+  };
+  hold.oninput = update;
+  root.querySelectorAll("#figSeg button").forEach(b => b.onclick = () => { slot = +b.dataset.s; show(); });
+  el("liveWrite").onchange = () => {
+    mode = el("liveWrite").checked ? "1" : "0";
+    localStorage.setItem("ishiki.writeMode", mode);
+    show();
+    // リアルタイムに戻すときは、先に今の設定を台に渡してから M1（台が置かれている石にすぐ書く）
+    if (mode === "1") { send("S1", card.command(1)); send("S0", card.command(0)); }
+    send("M", "M" + mode);
+  };
+  // LED の種類を変えたら、両方の光り方を送り直す（単色にしたら虹は呼吸に）
+  document.querySelectorAll("#ledKind button").forEach(b => b.onclick = () => {
+    kind = b.dataset.k;
+    localStorage.setItem("ishiki.ledKind", kind);
+    if (kind === "mono") looks.forEach(L => { if (L.pat === RAINBOW) L.pat = 2; });
+    show();
+    send("S1", card.command(1)); send("S0", card.command(0));
+  });
+  show();
+  return card;
+})();
+
+// 台座：石がないとき（0）と置いたとき（1）の 2 つ。画面ではどちらかを選んで変える
+const base = (() => {
+  const root = el("base"), level = root.querySelector(".level"), speed = root.querySelector(".speed");
+  const looks = [
+    { pat: 3, spd: 60, color: "#3b6bff", level: 160 },   // 待機：青の点滅
+    { pat: 6, spd: 140, color: "#ffffff", level: 200 },  // 置いたら虹
+  ];
+  let slot = 0;
+  const markColor = buildSwatches(root.querySelector(".swatches"), () => looks[slot].color, c => { looks[slot].color = c; update(); });
+  const mark = buildChips(root.querySelector(".chips"), [], i => { looks[slot].pat = i; update(); });
+  const rgbOf = L => hexToRgb(L.color).map(v => Math.round(v * L.level / 255));
+  const card = {
+    msg: root.querySelector(".msg"),
+    look: s => ({ pat: looks[s].pat, spd: looks[s].spd, rgb: rgbOf(looks[s]) }),
+    command: s => `L${s} ${looks[s].pat} ${looks[s].spd} ${ledRgb(looks[s].color, looks[s].level).join(" ")}`,
+    slot: () => slot,
+  };
+  function show() {
+    const L = looks[slot];
+    mark(L.pat); level.value = L.level; speed.value = L.spd;
+    markColor();
+    root.querySelectorAll("#slotSeg button").forEach(b => b.classList.toggle("sel", +b.dataset.s === slot));
+  }
+  function update() { show(); send("L" + slot, card.command(slot)); }
+  level.oninput = () => { looks[slot].level = +level.value; update(); };
+  speed.oninput = () => { looks[slot].spd = +speed.value; update(); };
+  root.querySelectorAll("#slotSeg button").forEach(b => b.onclick = () => { slot = +b.dataset.s; show(); });
+  show();
+  return card;
+})();
+
+// ---- 見本を動かす（台座の絵・石の LED・各カードの丸） ----
+const calcs = [makePattern(), makePattern(), makePattern(), makePattern()];
+const slits = [...document.querySelectorAll("#dai .slit")], stoneLed = el("stoneLed");
+const figOrb = document.querySelector("#figure .orb i"), baseOrb = document.querySelector("#base .orb i");
+// 単色の LED は見本を青で見せる（RGB のときは選んだ色のまま）
+const toBlue = c => { if (!figure.isMono()) return c; const m = Math.max(...c); return [Math.round(m * .35), Math.round(m * .55), m]; };
+(function frame(t) {
+  const F = figure.look(figure.slot()), fig = toBlue(calcs[0](t, F.pat, F.spd, ...F.rgb));
+  figOrb.style.background = `rgb(${fig})`; figOrb.style.boxShadow = glow(fig);
+  // 台の絵の石：タッチの光り方の時間中（触れている間は延びる）はそちらを見せる
+  if (touching) touchUntil = performance.now() + figure.holdMs();
+  const S = figure.look(performance.now() < touchUntil ? 1 : 0), sl = toBlue(calcs[3](t, S.pat, S.spd, ...S.rgb));
+  // 給電だけのときは、石のメモリの光り方は画面ではわからないので、光らせずに見せる
+  const live = present && figure.mode() === "1";
+  stoneLed.style.background = live ? `rgb(${sl})` : present ? "#8a90a0" : "#2a2e38";
+  stoneLed.style.boxShadow = live ? glow(sl, .8) : "none";
+
+  const B = base.look(base.slot()), bo = calcs[1](t, B.pat, B.spd, ...B.rgb);
+  baseOrb.style.background = `rgb(${bo})`; baseOrb.style.boxShadow = glow(bo);
+
+  // 台の絵：つながっていれば、石があるかどうかで台と同じ光り方を見せる
+  const D = base.look(present ? 1 : 0), d = calcs[2](t, D.pat, D.spd, ...D.rgb), m = Math.max(...d);
+  for (const sl of slits) {
+    sl.style.background = m ? `rgb(${d.map(v => Math.min(255, 40 + v))})` : "#23262e";
+    sl.style.boxShadow = m ? `0 0 ${6 + m / 12}px ${m / 60}px rgb(${d})` : "none";
+  }
+
+  // 台からの P が 1.5 秒来なければ、石の表示を消す
+  if (lastSeen && performance.now() - lastSeen > 1500) { present = near = false; lastSeen = 0; render(); }
+  requestAnimationFrame(frame);
+})(0);
+render();
+</script>
+</body>
+</html>
